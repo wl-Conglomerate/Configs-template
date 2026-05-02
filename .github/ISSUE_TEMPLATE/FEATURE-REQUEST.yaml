@@ -1,0 +1,19 @@
+name: "Feature request"
+description: "Suggest a new node, region, routing rule, or other improvement"
+labels:
+  - feature
+
+body:
+  - id: description
+    type: textarea
+    validations:
+      required: true
+    attributes:
+      label: "What do you want?"
+      description: "Describe the change or addition you'd like."
+
+  - id: reason
+    type: textarea
+    attributes:
+      label: "Why?"
+      description: "What problem does it solve or what does it improve?"

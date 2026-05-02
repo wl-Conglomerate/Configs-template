@@ -1,0 +1,61 @@
+name: ✅ Validate Topology
+
+on:
+  pull_request:
+    paths:
+      - "topology.yaml"
+
+jobs:
+  validate:
+    name: 🔍 Check hexrift config
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install HexRift
+        run: |
+          uv tool install --python 3.14 hexrift
+
+      - name: Validate Topology
+        run: |
+          hexrift --yaml topology.yaml validate
+
+      - name: Show Topology Info
+        id: show-info
+        run: |
+          INFO=$(hexrift --yaml topology.yaml show)
+          echo "info<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$INFO" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Comment PR with Topology Info
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const body = `### 📋 Topology Info\n\n\`\`\`\n${process.env.INFO}\n\`\`\``;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.startsWith('### 📋 Topology Info'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+        env:
+          INFO: ${{ steps.show-info.outputs.info }}

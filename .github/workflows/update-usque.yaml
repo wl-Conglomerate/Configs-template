@@ -1,0 +1,139 @@
+name: 🔄 Update usque via Edge
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: 🛠 Build & Deploy Usque
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: own
+
+      - name: Get usque HEAD SHA
+        id: usque-sha
+        run: |
+          SHA=$(gh api repos/diniboy1123/usque/commits/main --jq '.sha')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Cache usque binary
+        id: cache-usque
+        uses: actions/cache@v5
+        with:
+          key: usque-${{ runner.os }}-${{ steps.usque-sha.outputs.sha }}
+          path: usque
+
+      - name: Checkout usque
+        if: steps.cache-usque.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: diniboy1123/usque
+          path: usque-src
+
+      - uses: actions/setup-go@v6
+        if: steps.cache-usque.outputs.cache-hit != 'true'
+        with:
+          go-version-file: usque-src/go.mod
+          cache-dependency-path: usque-src/go.sum
+
+      - name: Build usque
+        if: steps.cache-usque.outputs.cache-hit != 'true'
+        working-directory: usque-src
+        run: |
+          CGO_ENABLED=0 go build -o ../usque -trimpath -buildvcs=false \
+            -gcflags="all=-l=4" \
+            -ldflags="-s -w -buildid=${{ steps.usque-sha.outputs.sha }}" \
+            .
+
+      - uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.EDGE_PORT }} -H ${{ secrets.EDGE_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to Edge
+        run: |
+          ssh -p ${{ secrets.EDGE_PORT }} ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} "mkdir -p /tmp/usque-deploy-${{ github.run_id }}"
+          scp -P ${{ secrets.EDGE_PORT }} own/scripts/update-usque.sh usque ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }}:/tmp/usque-deploy-${{ github.run_id }}/
+
+      - name: Ensure HexRift is updated on Edge
+        run: |
+          ssh -p ${{ secrets.EDGE_PORT }} -A ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} << 'EOF'
+            uv tool install hexrift -U
+          EOF
+
+      - name: Execute script with Agent Forwarding
+        run: |
+          set -o pipefail
+          ssh -p ${{ secrets.EDGE_PORT }} -A ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} << 'EOF' 2>&1 | tee /tmp/update_output.txt
+            DEPLOY_DIR="/tmp/usque-deploy-${{ github.run_id }}"
+            REPO_NAME="${{ github.event.repository.name }}"
+            chmod +x "$DEPLOY_DIR/update-usque.sh"
+            DEPLOY_BIN="$DEPLOY_DIR/usque" bash "$DEPLOY_DIR/update-usque.sh" "$REPO_NAME" "${{ secrets.EDGE_USER }}"
+            status=$?
+            rm -rf "$DEPLOY_DIR"
+            exit $status
+          EOF
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "## Usque Update Output"
+            echo '```'
+            cat /tmp/update_output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_THREAD_ID: ${{ secrets.DISCORD_THREAD_ID }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK_URL" ] && exit 0
+
+          if [ "$JOB_STATUS" = "success" ]; then
+            COLOR=3066993
+            TITLE="✅ Usque update succeeded"
+          else
+            COLOR=15158332
+            TITLE="❌ Usque update failed"
+          fi
+
+          OUTPUT=$(tail -c 1800 /tmp/update_output.txt 2>/dev/null)
+          [ -z "$OUTPUT" ] && OUTPUT="(no output captured)"
+
+          PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --argjson color "$COLOR" \
+            --arg output "$OUTPUT" \
+            --arg run_url "$RUN_URL" \
+            '{username:"Conglomerate Bot",
+              avatar_url:"https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+              embeds:[{
+                title:$title,
+                color:$color,
+                description:("```\n"+$output+"\n```"),
+                fields:[
+                  {name:"Run",value:("[View logs]("+$run_url+")"),inline:true}
+                ]
+              }]
+            }')
+
+          WEBHOOK_URL="$DISCORD_WEBHOOK_URL"
+          [ -n "$DISCORD_THREAD_ID" ] && WEBHOOK_URL="${WEBHOOK_URL}?thread_id=${DISCORD_THREAD_ID}"
+
+          curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_URL"

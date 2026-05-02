@@ -1,0 +1,151 @@
+name: 🔄 Update xray via Edge
+
+on:
+  schedule:
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    name: 🛠 Build & Deploy Xray
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: own
+
+      - name: Get xray-core HEAD SHA
+        id: xray-sha
+        run: |
+          SHA=$(gh api repos/xtls/xray-core/commits/main --jq '.sha')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Cache xray binary
+        id: cache-xray
+        uses: actions/cache@v5
+        with:
+          key: xray-${{ runner.os }}-${{ steps.xray-sha.outputs.sha }}
+          path: xray
+
+      - name: Checkout xray-core
+        if: steps.cache-xray.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: xtls/xray-core
+          path: xray-core
+
+      - uses: actions/setup-go@v6
+        if: steps.cache-xray.outputs.cache-hit != 'true'
+        with:
+          go-version-file: xray-core/go.mod
+          cache-dependency-path: xray-core/go.sum
+
+      - name: Build xray
+        if: steps.cache-xray.outputs.cache-hit != 'true'
+        working-directory: xray-core
+        run: |
+          CGO_ENABLED=0 go build -o ../xray -trimpath -buildvcs=false \
+            -gcflags="all=-l=4" \
+            -ldflags="-s -w -buildid=${{ steps.xray-sha.outputs.sha }} -X github.com/xtls/xray-core/core.build=${{ steps.xray-sha.outputs.sha }}" \
+            ./main
+
+      - uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.EDGE_PORT }} -H ${{ secrets.EDGE_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to Edge
+        run: |
+          ssh -p ${{ secrets.EDGE_PORT }} ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} "mkdir -p /tmp/xray-deploy-${{ github.run_id }}"
+          scp -P ${{ secrets.EDGE_PORT }} own/scripts/update-xray.sh xray ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }}:/tmp/xray-deploy-${{ github.run_id }}/
+
+      - name: Ensure HexRift is updated on Edge
+        run: |
+          ssh -p ${{ secrets.EDGE_PORT }} -A ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} << 'EOF'
+            uv tool install hexrift -U
+          EOF
+
+      - name: Execute script with Agent Forwarding
+        run: |
+          set -o pipefail
+          ssh -p ${{ secrets.EDGE_PORT }} -A ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} << 'EOF' 2>&1 | tee /tmp/update_output.txt
+            DEPLOY_DIR="/tmp/xray-deploy-${{ github.run_id }}"
+            REPO_NAME="${{ github.event.repository.name }}"
+            chmod +x "$DEPLOY_DIR/update-xray.sh"
+            DEPLOY_BIN="$DEPLOY_DIR/xray" bash "$DEPLOY_DIR/update-xray.sh" "$REPO_NAME" "${{ secrets.EDGE_USER }}"
+            status=$?
+            rm -rf "$DEPLOY_DIR"
+            exit $status
+          EOF
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "## Xray Update Output"
+            echo '```'
+            cat /tmp/update_output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_THREAD_ID: ${{ secrets.DISCORD_THREAD_ID }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK_URL" ] && exit 0
+
+          if [ "$JOB_STATUS" = "success" ]; then
+            COLOR=3066993
+            TITLE="✅ Xray update succeeded"
+          else
+            COLOR=15158332
+            TITLE="❌ Xray update failed"
+          fi
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TRIGGER="Manual ($ACTOR)"
+          else
+            TRIGGER="Weekly"
+          fi
+
+          OUTPUT=$(cat /tmp/update_output.txt 2>/dev/null | tail -c 1800)
+          [ -z "$OUTPUT" ] && OUTPUT="(no output captured)"
+
+          PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --argjson color "$COLOR" \
+            --arg output "$OUTPUT" \
+            --arg run_url "$RUN_URL" \
+            --arg trigger "$TRIGGER" \
+            '{username:"Conglomerate Bot",
+              avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+              embeds:[{
+                title:$title,
+                color:$color,
+                description:("```\n"+$output+"\n```"),
+                fields:[
+                  {name:"Trigger", value:$trigger, inline:true},
+                  {name:"Run", value:("[View logs]("+$run_url+")"), inline:true}
+                ]
+              }]
+            }')
+
+          WEBHOOK_URL="$DISCORD_WEBHOOK_URL"
+          [ -n "$DISCORD_THREAD_ID" ] && WEBHOOK_URL="${WEBHOOK_URL}?thread_id=${DISCORD_THREAD_ID}"
+
+          curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_URL"

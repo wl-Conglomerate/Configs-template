@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/wlix13/HexRift/refs/heads/main/hexrift/components/schema/schema.json
+global:
+  namespace: connection.example.com
+  aphelion_domain: far.connection.example.com
+  cdn: null
+
+defaults:
+  exit:
+    ipv6: true
+    keys:
+      auth: mlkem768
+      mode: native
+      session_time: 600s
+  hub:
+    ipv6: True
+    proxy: False
+    keys:
+      auth: x25519
+      mode: native
+      session_time: 600s
+    exit_connections:
+      method: mlkem768x25519plus
+      fingerprint: chrome
+    reality:
+      dest: example.com:443
+      server_names: [www.example.com, example.com]
+      xhttp_host: example.com
+      xhttp_path: /test/
+
+groups:
+  - id: personal
+  - id: friends
+
+users:
+  - username: master
+    group: personal
+    access: [xhttp, proxy]
+
+  - username: dave
+    group: friends
+    access: [xhttp]
+
+routing:
+  exit_warp_global:
+    - domain:iplocation.net
+    - domain:ipify.org
+
+  hub_routes:
+    - destination: blocked
+      domains:
+        [domain:clym-sdk.net, geosite:category-ads-all, domain:nr-data.net]
+      ips: [geoip:private]
+    - destination: direct
+      domains: [full:connection.example.com, domain:far.connection.example.com]
+
+  hub_default: outside
+
+regions:
+  - id: outside
+    type: exit
+    vless_route: 19000
+    cdn_xhttp_path: null
+    lb_strategy: leastLoad
+    lb_fallback: outA00
+    routing:
+      warp_extra:
+        - geosite:netflix
+        - geosite:reddit
+    nodes:
+      - id: outA00
+        hostname: outA00.far.connection.example.com
+        reality:
+          dest: www.second.example.com:443
+          server_names: [www.second.example.com, second.example.com]
+          xhttp_path: /path2/
+      - id: outA10
+        hostname: outA10.far.connection.example.com
+        reality:
+          dest: www.thirds.example.com:443
+          server_names: [www.thirds.example.com, thirds.example.com]
+          xhttp_path: /path3/
+
+  - id: Connection
+    type: hub
+    cdn_xhttp_path: null
+    nodes:
+      - id: insideA00
+        hostname: insideA00.connection.example.com
+      - id: insideA00
+        hostname: insideA00.connection.example.com

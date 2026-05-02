@@ -1,0 +1,24 @@
+name: "Bug report"
+description: "Something isn't working as expected"
+labels:
+  - bug
+
+body:
+  - id: description
+    type: textarea
+    validations:
+      required: true
+    attributes:
+      label: "What's broken?"
+      description: "Describe the issue — which node/region, what went wrong, any error output."
+
+  - id: expected
+    type: textarea
+    attributes:
+      label: "What should happen instead?"
+
+  - id: additional
+    type: textarea
+    attributes:
+      label: "Anything else?"
+      description: "Steps to reproduce, related commits, workarounds tried, etc."

@@ -1,0 +1,114 @@
+name: 🌐 Deploy via Edge
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/deploy.sh
+      - topology.yaml
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: 🚀 Deploy via Edge
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: own
+
+      - uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p ${{ secrets.EDGE_PORT }} -H ${{ secrets.EDGE_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy files to Edge
+        run: |
+          scp -P ${{ secrets.EDGE_PORT }} own/scripts/deploy.sh own/topology.yaml ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }}:/tmp/
+
+      - name: Ensure HexRift is updated on Edge
+        run: |
+          ssh -p ${{ secrets.EDGE_PORT }} -A ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} << 'EOF'
+            uv tool install hexrift -U
+          EOF
+
+      - name: Execute script with Agent Forwarding
+        run: |
+          set -o pipefail
+          ssh -p ${{ secrets.EDGE_PORT }} -A ${{ secrets.EDGE_USER }}@${{ secrets.EDGE_HOST }} << 'EOF' 2>&1 | tee /tmp/deploy_output.txt
+            REPO_NAME="${{ github.event.repository.name }}"
+            chmod +x /tmp/deploy.sh
+            mv /tmp/topology.yaml "/usr/local/share/hexrift/$REPO_NAME/topology.yaml"
+            bash /tmp/deploy.sh "$REPO_NAME" "${{ secrets.EDGE_USER }}"
+            status=$?
+            rm -f /tmp/deploy.sh
+            exit $status
+          EOF
+
+      - name: Write deploy summary
+        if: always()
+        run: |
+          {
+            echo "## Deploy Output"
+            echo '```'
+            cat /tmp/deploy_output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_THREAD_ID: ${{ secrets.DISCORD_THREAD_ID }}
+          JOB_STATUS: ${{ job.status }}
+          COMMIT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK_URL" ] && exit 0
+
+          if [ "$JOB_STATUS" = "success" ]; then
+            COLOR=3066993
+            TITLE="✅ Deploy succeeded"
+          else
+            COLOR=15158332
+            TITLE="❌ Deploy failed"
+          fi
+
+          OUTPUT=$(cat /tmp/deploy_output.txt 2>/dev/null | tail -c 1800)
+          [ -z "$OUTPUT" ] && OUTPUT="(no output captured)"
+
+          PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --argjson color "$COLOR" \
+            --arg output "$OUTPUT" \
+            --arg commit "${COMMIT_SHA:0:12}" \
+            --arg actor "$ACTOR" \
+            --arg run_url "$RUN_URL" \
+            '{
+              username: "Conglomerate Bot",
+              avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+              embeds: [{
+                title: $title,
+                color: $color,
+                description: ("```\n" + $output + "\n```"),
+                fields: [
+                  {name: "Commit", value: ("`" + $commit + "`"), inline: true},
+                  {name: "Actor", value: $actor, inline: true},
+                  {name: "Run", value: ("[View logs](" + $run_url + ")"), inline: true}
+                ]
+              }]
+            }')
+
+          WEBHOOK_URL="$DISCORD_WEBHOOK_URL"
+          [ -n "$DISCORD_THREAD_ID" ] && WEBHOOK_URL="${WEBHOOK_URL}?thread_id=${DISCORD_THREAD_ID}"
+
+          curl -s -o /dev/null -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_URL"

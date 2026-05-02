@@ -1,0 +1,19 @@
+#  JetBrains folder
+.idea/
+
+# VSCode folder
+.vscode
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Keys and configs
+keys/
+output/*
+configs/*

@@ -1,0 +1,31 @@
+- name: "bug"
+  description: "Something is broken"
+  color: "d73a4a"
+
+- name: "users"
+  description: "New node, user, region, or routing rule"
+  color: "28a745"
+
+- name: "servers"
+  description: "Changes to server nodes or regions"
+  color: "0075ca"
+
+- name: "breaking change"
+  description: "Breaks existing client connections or configs"
+  color: "b60205"
+
+- name: "topology"
+  description: "Changes to topology file"
+  color: "17a2b8"
+
+- name: "ci/deploy"
+  description: "Changes to deployment scripts or workflows"
+  color: "264653"
+
+- name: "ci/dependencies"
+  description: "Updates to workflows versions"
+  color: "e4e669"
+
+- name: "wontfix"
+  description: "This will not be worked on"
+  color: "6c757d"
